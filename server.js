@@ -134,33 +134,46 @@ io.on('connection', (socket) => {
             { id: 'bot_right', username: 'Bot_Zoki 🤖', isBot: true, passed: false }
         ];
 
+        // BALKANSKO PRAVILO: Ti deliš (0), Bot Milan (1) je "prva ruka" i počinje licitaciju!
         activeRooms[roomId] = {
             id: roomId,
             players: virtualniIgraci,
             cards: karte.ruke, 
             talon: karte.talon,
             gameState: 'licitation',
-            currentTurn: 0, 
+            currentTurn: 1, // Počinje Bot Milan
             trenutnaPonuda: 'Traži se početna reč',
             koJePonudio: 'Niko',
             brojAktivnih: 3
         };
 
         socket.join(roomId);
-        
+                      
         socket.emit('game_ready', {
             roomId: roomId,
             allPlayers: virtualniIgraci,
-            myCards: karte.ruke[0]
+            myCards: karte.ruke[0] /
+[0] // Šaljemo tvojih 10 karata (Ti si uvek prvi u nizu)
         });
 
+        // Šaljemo početno stanje svima
         io.to(roomId).emit('licitation_update', {
             players: activeRooms[roomId].players,
-            currentTurn: 0,
+            currentTurn: 1,
             trenutnaPonuda: activeRooms[roomId].trenutnaPonuda,
             koJePonudio: activeRooms[roomId].koJePonudio,
             licitacijaZavrsena: false
         });
+
+        // Pošto je na redu Bot Milan (1), odmah pokrećemo njegov tajmer da počne licitaciju
+        setTimeout(() => {
+            let room = activeRooms[roomId];
+            let snagaRuke = proceniRukuBota(room.cards[1]);
+            let botIzbor = (snagaRuke >= 3) ? '2' : 'Dalje';
+            izvrsiLicitaciju(room, botIzbor, 1);
+        }, 1500); 
+
+        console.log(`🚀 Igra pokrenuta! Prva ruka Bot Milan licitira...`);
     });
 
     socket.on('make_bid', (data) => {
@@ -175,7 +188,6 @@ io.on('connection', (socket) => {
         // Osiguravamo da samo igrač na potezu može da pošalje ponudu
         if (room.players[room.currentTurn].id !== socket.id) return;
 
-        // Prosleđujemo TAČAN indeks trenutnog igrača da ne pomešamo botove
         izvrsiLicitaciju(room, data.bid, room.currentTurn);
     });
 });
@@ -211,7 +223,7 @@ function izvrsiLicitaciju(room, izbor, indeksIgraca) {
         room.currentTurn = (room.currentTurn + 1) % 3;
     } while (room.players[room.currentTurn].passed);
 
-    // Šaljemo osveženje svim klijentima
+    // Šaljemo osveženje klijentu
     io.to(room.id).emit('licitation_update', {
         players: room.players,
         currentTurn: room.currentTurn,
@@ -228,16 +240,28 @@ function izvrsiLicitaciju(room, izbor, indeksIgraca) {
             let snagaRuke = proceniRukuBota(room.cards[room.currentTurn]);
             let botIzbor = 'Dalje';
 
-            // Osnovna balkanska procena bota
-            if (snagaRuke >= 3 && room.trenutnaPonuda === 'Traži se početna reč') {
-                botIzbor = '2'; 
-            } else if (snagaRuke >= 5 && room.trenutnaPonuda === '2') {
-                botIzbor = '3'; 
+            // Osnovna balkanska procena bota: ako ima bar 3 jake karte prati
+            if (room.trenutnaPonuda === 'Traži se početna reč') {
+                botIzbor = (snagaRuke >= 3) ? '2' : 'Dalje';
+            } else {
+                // Ako već postoji ponuda, bot diže ulog samo ako ima izuzetno jaku ruku (5+ as/kralj)
+                if (snagaRuke >= 5) {
+                    if (room.trenutnaPonuda === '2') botIzbor = '3';
+                    else if (room.trenutnaPonuda === '3') botIzbor = '4';
+                    else botIzbor = 'Dalje';
+                } else {
+                    botIzbor = 'Dalje';
+                }
             }
 
-            // Bot prosleđuje SVOJ indeks (room.currentTurn) u funkciju
             izvrsiLicitaciju(room, botIzbor, room.currentTurn);
         }, 1500); 
     }
 }
+
+// Pokretanje servera
+const PORT = process.env.PORT || 5000;
+server.listen(PORT, () => {
+    console.log(`Server je uspešno pokrenut na portu ${PORT}`);
+});
 
