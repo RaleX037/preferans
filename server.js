@@ -60,28 +60,59 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// --- WEBSOCKET LOGIKA (SOCKET.IO) ---
+// --- KREIRANJE SOBA ZA PREFERANS ---
+let activeRooms = {}; // Čuva stanje svih stolova/soba
+let waitingPlayers = []; // Lista igrača koji čekaju slobodno mesto
+
 io.on('connection', (socket) => {
-  console.log(`Korisnik povezan: ${socket.id}`);
+    // Provera da li je korisnik ulogovan (preko JWT-a prosleđenog pri konekciji)
+    const username = socket.handshake.auth.username || "Gost_" + socket.id.substring(0, 4);
+    console.log(`♣️ Igrač ${username} se povezao na server.`);
 
-  // Pridruživanje stolu / sobi
-  socket.on('join_game', ({ gameId, username }) => {
-    socket.join(`game_${gameId}`);
-    console.log(`${username} se pridružio igri ${gameId}`);
-    io.to(`game_${gameId}`).emit('player_joined', { username, msg: `${username} je ušao u igru.` });
-  });
+    // 1. Kada igrač zatraži da se pridruži stolu
+    socket.on('join_table', () => {
+        // Provera da li je igrač već u redu za čekanje
+        if (waitingPlayers.some(p => p.username === username)) return;
 
-  // Simulacija odigravanja karte u preferansu
-  socket.on('play_card', ({ gameId, player, card }) => {
-    // Ovde se kasnije dodaje provera pravila preferansa (boja, adut, sečenje...)
-    console.log(`Igra u sobi ${gameId}: ${player} je bacio ${card}`);
-    io.to(`game_${gameId}`).emit('card_played', { player, card });
-  });
+        waitingPlayers.push({ id: socket.id, username: username, socket: socket });
+        console.log(`👥 ${username} čeka suigrače. Ukupno u čekanju: ${waitingPlayers.length}`);
 
-  socket.on('disconnect', () => {
-    console.log(`Korisnik odjavljen: ${socket.id}`);
-  });
+        // 2. Kada imamo tačno 3 igrača u redu, kreiramo sobu i spajamo ih
+        if (waitingPlayers.length >= 3) {
+            const roomId = 'room_' + Date.now(); // Jedinstveni ID sobe
+            const playersForThisRoom = waitingPlayers.splice(0, 3); // Uzimamo prva 3 igrača
+
+            activeRooms[roomId] = {
+                id: roomId,
+                players: playersForThisRoom.map(p => ({ id: p.id, username: p.username })),
+                gameState: 'waiting_to_start'
+            };
+
+            // Spajamo sva tri igrača u Socket.io "room" i šaljemo im signal
+            playersForThisRoom.forEach((player, index) => {
+                player.socket.join(roomId);
+                
+                // Šaljemo svakom igraču informaciju o sobi i ko su mu suigrači
+                player.socket.emit('game_ready', {
+                    roomId: roomId,
+                    mySeat: index + 1, // Pozicija 1, 2 ili 3 za stolom
+                    allPlayers: activeRooms[roomId].players
+                });
+            });
+
+            console.log(`🚀 Igra je spremna u sobi ${roomId}! Igrači: ${activeRooms[roomId].players.map(p=>p.username).join(', ')}`);
+        } else {
+            // Ako nema dovoljno igrača, obaveštavamo trenutnog igrača da čeka
+            socket.emit('waiting_for_players', { count: waitingPlayers.length });
+        }
+    });
+
+    // 3. Logika za prekid veze (ako igrač izađe pre nego što igra počne)
+    socket.on('disconnect', () => {
+        console.log(`❌ Korisnik ${username} je prekinuo vezu.`);
+        waitingPlayers = waitingPlayers.filter(p => p.id !== socket.id);
+        
+        // (Opciono): Ovde kasnije možemo dodati i logiku ako igrač pobegne usred partije
+    });
 });
 
-const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => console.log(`Server pokrenut na portu ${PORT}`));
