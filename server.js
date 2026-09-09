@@ -1,8 +1,8 @@
-const express = require(const express = require('express');
+const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
 const bcrypt = require('bcrypt');
-const jwt = require('jwt-simple'); // ili 'jsonwebtoken' u zavisnosti šta koristiš
+const jwt = require('jsonwebtoken');
 const http = require('http');
 const { Server } = require('socket.io');
 
@@ -19,8 +19,17 @@ const pool = new Pool({
     ssl: { rejectUnauthorized: false }
 });
 
+// Provera konekcije sa bazom pri pokretanju
+pool.connect((err, client, release) => {
+    if (err) {
+        return console.error('Greška pri povezivanju sa PostgreSQL bazom:', err.stack);
+    }
+    console.log('Uspešno povezan sa Neon PostgreSQL bazom podataka!');
+    release();
+});
+
 // ==========================================
-//  RUTE ZA AUTENTIFIKACIJU (OVO JE FALILO!)
+//  RUTE ZA AUTENTIFIKACIJU
 // ==========================================
 
 // 1. Registracija korisnika
@@ -33,7 +42,7 @@ app.post('/api/auth/register', async (req, res) => {
             return res.status(400).json({ message: 'Korisničko ime ili email su već zauzeti.' });
         }
 
-        // Hesiranje lozinke radi bezbednosti
+        // Heširanje lozinke radi bezbednosti
         const saltRounds = 10;
         const hashedPassword = await bcrypt.hash(password, saltRounds);
 
@@ -45,7 +54,7 @@ app.post('/api/auth/register', async (req, res) => {
 
         res.status(201).json({ message: 'Uspešna registracija!' });
     } catch (err) {
-        console.error(err);
+        console.error('Greška pri registraciji:', err);
         res.status(500).json({ message: 'Greška na serveru pri registraciji.' });
     }
 });
@@ -69,11 +78,11 @@ app.post('/api/auth/login', async (req, res) => {
 
         // Kreiranje tokena (JWT)
         const secret = process.env.JWT_SECRET || 'moja_tajna_rec';
-        const token = jwt.encode({ userId: user.id, username: user.username }, secret);
+        const token = jwt.sign({ userId: user.id, username: user.username }, secret, { expiresIn: '24h' });
 
         res.json({ token, username: user.username });
     } catch (err) {
-        console.error(err);
+        console.error('Greška pri prijavi:', err);
         res.status(500).json({ message: 'Greška na serveru pri prijavi.' });
     }
 });
@@ -83,41 +92,29 @@ app.post('/api/auth/login', async (req, res) => {
 // ==========================================
 const io = new Server(server, {
     cors: {
-        origin: "*", // Dozvoljava svim frontend aplikacijama da se povežu
+        origin: "*", 
         methods: ["GET", "POST"]
     }
 });
 
-// ... (Ovde ide onaj Socket.io kod sa join_table koji smo napisali u prethodnom koraku) ...
-
-// Pokretanje servera
-const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => {
-    console.log(`Server je pokrenut na portu ${PORT}`);
-});
-
-
-// --- KREIRANJE SOBA ZA PREFERANS ---
 let activeRooms = {}; // Čuva stanje svih stolova/soba
 let waitingPlayers = []; // Lista igrača koji čekaju slobodno mesto
 
 io.on('connection', (socket) => {
-    // Provera da li je korisnik ulogovan (preko JWT-a prosleđenog pri konekciji)
     const username = socket.handshake.auth.username || "Gost_" + socket.id.substring(0, 4);
     console.log(`♣️ Igrač ${username} se povezao na server.`);
 
-    // 1. Kada igrač zatraži da se pridruži stolu
+    // Kada igrač zatraži da se pridruži stolu
     socket.on('join_table', () => {
-        // Provera da li je igrač već u redu za čekanje
         if (waitingPlayers.some(p => p.username === username)) return;
 
         waitingPlayers.push({ id: socket.id, username: username, socket: socket });
         console.log(`👥 ${username} čeka suigrače. Ukupno u čekanju: ${waitingPlayers.length}`);
 
-        // 2. Kada imamo tačno 3 igrača u redu, kreiramo sobu i spajamo ih
+        // Kada imamo tačno 3 igrača u redu, kreiramo sobu i spajamo ih
         if (waitingPlayers.length >= 3) {
-            const roomId = 'room_' + Date.now(); // Jedinstveni ID sobe
-            const playersForThisRoom = waitingPlayers.splice(0, 3); // Uzimamo prva 3 igrača
+            const roomId = 'room_' + Date.now(); 
+            const playersForThisRoom = waitingPlayers.splice(0, 3); 
 
             activeRooms[roomId] = {
                 id: roomId,
@@ -129,27 +126,28 @@ io.on('connection', (socket) => {
             playersForThisRoom.forEach((player, index) => {
                 player.socket.join(roomId);
                 
-                // Šaljemo svakom igraču informaciju o sobi i ko su mu suigrači
                 player.socket.emit('game_ready', {
                     roomId: roomId,
-                    mySeat: index + 1, // Pozicija 1, 2 ili 3 za stolom
+                    mySeat: index + 1, 
                     allPlayers: activeRooms[roomId].players
                 });
             });
 
             console.log(`🚀 Igra je spremna u sobi ${roomId}! Igrači: ${activeRooms[roomId].players.map(p=>p.username).join(', ')}`);
         } else {
-            // Ako nema dovoljno igrača, obaveštavamo trenutnog igrača da čeka
             socket.emit('waiting_for_players', { count: waitingPlayers.length });
         }
     });
 
-    // 3. Logika za prekid veze (ako igrač izađe pre nego što igra počne)
     socket.on('disconnect', () => {
         console.log(`❌ Korisnik ${username} je prekinuo vezu.`);
         waitingPlayers = waitingPlayers.filter(p => p.id !== socket.id);
-        
-        // (Opciono): Ovde kasnije možemo dodati i logiku ako igrač pobegne usred partije
     });
+});
+
+// Pokretanje servera
+const PORT = process.env.PORT || 5000;
+server.listen(PORT, () => {
+    console.log(`Server je pokrenut na portu ${PORT}`);
 });
 
