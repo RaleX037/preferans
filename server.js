@@ -1,64 +1,101 @@
-const express = require('express');
+const express = require(const express = require('express');
+const cors = require('cors');
+const { Pool } = require('pg');
+const bcrypt = require('bcrypt');
+const jwt = require('jwt-simple'); // ili 'jsonwebtoken' u zavisnosti šta koristiš
 const http = require('http');
 const { Server } = require('socket.io');
-const cors = require('cors');
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
-const { Pool } = require('pg');
-require('dotenv').config();
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server, {
-  cors: { origin: "*" }
-});
 
+// Srednji slojevi (Middleware)
 app.use(cors());
 app.use(express.json());
 
-// Povezivanje sa PostgreSQL bazom podataka
+// Konekcija sa bazom podataka (Neon.tech)
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false } // Obavezno za Render/Neon/Supabase besplatne baze
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false }
 });
 
-// --- RUTE ZA AUTENTIFIKACIJU ---
+// ==========================================
+//  RUTE ZA AUTENTIFIKACIJU (OVO JE FALILO!)
+// ==========================================
 
-// Registracija
-app.post('/api/register', async (req, res) => {
-  const { username, email, password } = req.body;
-  try {
-    const salt = await bcrypt.genSalt(10);
-    const passwordHash = await bcrypt.hash(password, salt);
+// 1. Registracija korisnika
+app.post('/api/auth/register', async (req, res) => {
+    const { username, email, password } = req.body;
+    try {
+        // Provera da li korisnik već postoji
+        const userExists = await pool.query('SELECT * FROM users WHERE username = $1 OR email = $2', [username, email]);
+        if (userExists.rows.length > 0) {
+            return res.status(400).json({ message: 'Korisničko ime ili email su već zauzeti.' });
+        }
 
-    const newUser = await pool.query(
-      'INSERT INTO users (username, email, password_hash) VALUES ($1, $2, $3) RETURNING id, username, email',
-      [username, email, passwordHash]
-    );
+        // Hesiranje lozinke radi bezbednosti
+        const saltRounds = 10;
+        const hashedPassword = await bcrypt.hash(password, saltRounds);
 
-    res.status(201).json(newUser.rows[0]);
-  } catch (err) {
-    res.status(400).json({ error: "Korisničko ime ili email već postoje." });
-  }
+        // Upis u bazu
+        await pool.query(
+            'INSERT INTO users (username, email, password) VALUES ($1, $2, $3)',
+            [username, email, hashedPassword]
+        );
+
+        res.status(201).json({ message: 'Uspešna registracija!' });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: 'Greška na serveru pri registraciji.' });
+    }
 });
 
-// Logovanje
-app.post('/api/login', async (req, res) => {
-  const { email, password } = req.body;
-  try {
-    const userRes = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
-    if (userRes.rows.length === 0) return res.status(400).json({ error: "Pogrešni kredencijali." });
+// 2. Logovanje korisnika
+app.post('/api/auth/login', async (req, res) => {
+    const { username, password } = req.body;
+    try {
+        const result = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
+        if (result.rows.length === 0) {
+            return res.status(400).json({ message: 'Neispravno korisničko ime ili lozinka.' });
+        }
 
-    const user = userRes.rows[0];
-    const isMatch = await bcrypt.compare(password, user.password_hash);
-    if (!isMatch) return res.status(400).json({ error: "Pogrešni kredencijali." });
+        const user = result.rows[0];
+        
+        // Provera lozinke
+        const isMatch = await bcrypt.compare(password, user.password);
+        if (!isMatch) {
+            return res.status(400).json({ message: 'Neispravno korisničko ime ili lozinka.' });
+        }
 
-    const token = jwt.sign({ id: user.id, username: user.username }, process.env.JWT_SECRET, { expiresIn: '1d' });
-    res.json({ token, user: { id: user.id, username: user.username } });
-  } catch (err) {
-    res.status(500).json({ error: "Serverska greška." });
-  }
+        // Kreiranje tokena (JWT)
+        const secret = process.env.JWT_SECRET || 'moja_tajna_rec';
+        const token = jwt.encode({ userId: user.id, username: user.username }, secret);
+
+        res.json({ token, username: user.username });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: 'Greška na serveru pri prijavi.' });
+    }
 });
+
+// ==========================================
+//  SOCKET.IO LOGIKA (Sobe i igrači)
+// ==========================================
+const io = new Server(server, {
+    cors: {
+        origin: "*", // Dozvoljava svim frontend aplikacijama da se povežu
+        methods: ["GET", "POST"]
+    }
+});
+
+// ... (Ovde ide onaj Socket.io kod sa join_table koji smo napisali u prethodnom koraku) ...
+
+// Pokretanje servera
+const PORT = process.env.PORT || 5000;
+server.listen(PORT, () => {
+    console.log(`Server je pokrenut na portu ${PORT}`);
+});
+
 
 // --- KREIRANJE SOBA ZA PREFERANS ---
 let activeRooms = {}; // Čuva stanje svih stolova/soba
