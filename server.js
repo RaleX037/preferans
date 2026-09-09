@@ -87,67 +87,78 @@ app.post('/api/auth/login', async (req, res) => {
     }
 });
 
-// ==========================================
-//  SOCKET.IO LOGIKA (Sobe i igrači)
-// ==========================================
-const io = new Server(server, {
-    cors: {
-        origin: "*", 
-        methods: ["GET", "POST"]
-    }
-});
+// --- POMOĆNA FUNKCIJA ZA MEŠANJE I DELJENJE KARATA ---
+function podeliPreferansKarte() {
+    const boje = ['spades', 'diamonds', 'hearts', 'clubs']; // ♠️, ♦️, ♥️, ♣️
+    const vrednosti = ['7', '8', '9', '10', 'J', 'Q', 'K', 'A'];
+    let špil = [];
 
-let activeRooms = {}; // Čuva stanje svih stolova/soba
-let waitingPlayers = []; // Lista igrača koji čekaju slobodno mesto
+    for (let boja of boje) {
+        for (let vrednost of vrednosti) {
+            špil.push({ boja: boja, vrednost: vrednost });
+        }
+    }
+
+    // Mešanje špila (Fisher-Yates)
+    for (let i = špil.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [špil[i], špil[j]] = [špil[j], špil[i]];
+    }
+
+    let igrac1 = špil.slice(0, 10);
+    let igrac2 = špil.slice(10, 20);
+    let igrac3 = špil.slice(20, 30);
+    let talon = špil.slice(30, 32);
+
+    return { ruke: [igrac1, igrac2, igrac3], talon: talon };
+}
+
+// ==========================================
+//  SOCKET.IO LOGIKA (Jedan igrač + dva AI bota)
+// ==========================================
+let activeRooms = {}; 
 
 io.on('connection', (socket) => {
     const username = socket.handshake.auth.username || "Gost_" + socket.id.substring(0, 4);
-    console.log(`♣️ Igrač ${username} se povezao na server.`);
+    console.log(`♣️ Pravi igrač ${username} se povezao na server.`);
 
-    // Kada igrač zatraži da se pridruži stolu
+    // Kada igrač uđe na sto.html, odmah mu pravimo igru sa botovima
     socket.on('join_table', () => {
-        if (waitingPlayers.some(p => p.username === username)) return;
+        const roomId = 'room_' + Date.now(); 
+        const podeljeneKarte = podeliPreferansKarte();
 
-        waitingPlayers.push({ id: socket.id, username: username, socket: socket });
-        console.log(`👥 ${username} čeka suigrače. Ukupno u čekanju: ${waitingPlayers.length}`);
+        // Kreiramo listu igrača gde si TI na poziciji 1, a botovi na pozicijama 2 i 3
+        const virtualniIgraci = [
+            { id: socket.id, username: username, isBot: false },
+            { id: 'bot_left', username: 'Bot_Milan 🤖', isBot: true },
+            { id: 'bot_right', username: 'Bot_Zoki 🤖', isBot: true }
+        ];
 
-        // Kada imamo tačno 3 igrača u redu, kreiramo sobu i spajamo ih
-        if (waitingPlayers.length >= 3) {
-            const roomId = 'room_' + Date.now(); 
-            const playersForThisRoom = waitingPlayers.splice(0, 3); 
+        activeRooms[roomId] = {
+            id: roomId,
+            players: virtualniIgraci,
+            gameState: 'licitation', 
+            talon: podeljeneKarte.talon, 
+            cards: podeljeneKarte.ruke, 
+            currentTurn: 0 // Ti (Igrač 1) počinješ licitaciju
+        };
 
-            activeRooms[roomId] = {
-                id: roomId,
-                players: playersForThisRoom.map(p => ({ id: p.id, username: p.username })),
-                gameState: 'waiting_to_start'
-            };
+        // Pošto si ti jedini pravi čovek u sobi, samo tebe ubacujemo u Socket room
+        socket.join(roomId);
+        
+        // Šaljemo tebi tvoje karte i podatke o stolu gde su botovi suigrači
+        socket.emit('game_ready', {
+            roomId: roomId,
+            mySeat: 1, // Ti uvek sediš na mestu br. 1 (dole)
+            allPlayers: virtualniIgraci.map(p => ({ id: p.id, username: p.username })),
+            myCards: podeljeneKarte.ruke[0] // Tvojih 10 karata
+        });
 
-            // Spajamo sva tri igrača u Socket.io "room" i šaljemo im signal
-            playersForThisRoom.forEach((player, index) => {
-                player.socket.join(roomId);
-                
-                player.socket.emit('game_ready', {
-                    roomId: roomId,
-                    mySeat: index + 1, 
-                    allPlayers: activeRooms[roomId].players
-                });
-            });
-
-            console.log(`🚀 Igra je spremna u sobi ${roomId}! Igrači: ${activeRooms[roomId].players.map(p=>p.username).join(', ')}`);
-        } else {
-            socket.emit('waiting_for_players', { count: waitingPlayers.length });
-        }
+        console.log(`🚀 Igra sa botovima je spremna u sobi ${roomId} za igrača ${username}!`);
     });
 
     socket.on('disconnect', () => {
         console.log(`❌ Korisnik ${username} je prekinuo vezu.`);
-        waitingPlayers = waitingPlayers.filter(p => p.id !== socket.id);
     });
-});
-
-// Pokretanje servera
-const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => {
-    console.log(`Server je pokrenut na portu ${PORT}`);
 });
 
