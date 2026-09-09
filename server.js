@@ -112,20 +112,20 @@ function podeliPreferansKarte() {
 // ==========================================
 //  SOCKET.IO LOGIKA (Jedan igrač + dva AI bota)
 // ==========================================
-// ==========================================
-//  SOCKET.IO LOGIKA SA AI LICITACIJOM
+//// ==========================================
+//  SOCKET.IO LOGIKA (SA FIX-OM ZA BOTOVE)
 // ==========================================
 const io = new Server(server, { cors: { origin: "*", methods: ["GET", "POST"] } });
 let activeRooms = {}; 
 
-// Pomoćna funkcija: Procena snage botove ruke (broj Aseva i Kraljeva)
 function proceniRukuBota(karteBota) {
     let jakeKarte = karteBota.filter(k => k.vrednost === 'A' || k.vrednost === 'K');
-    return jakeKarte.length; // Vraća broj jakih karata
+    return jakeKarte.length; 
 }
 
 io.on('connection', (socket) => {
     const username = socket.handshake.auth.username || "Igrač";
+    console.log(`♣️ Pravi igrač ${username} se povezao na server.`);
 
     socket.on('join_table', () => {
         const roomId = 'room_' + Date.now(); 
@@ -143,7 +143,7 @@ io.on('connection', (socket) => {
             cards: karte.ruke, 
             talon: karte.talon,
             gameState: 'licitation',
-            currentTurn: 0, // 0 = Ti, 1 = Bot Levo, 2 = Bot Desno
+            currentTurn: 0, 
             trenutnaPonuda: 'Traži se početna reč',
             koJePonudio: 'Niko',
             brojAktivnih: 3
@@ -154,10 +154,9 @@ io.on('connection', (socket) => {
         socket.emit('game_ready', {
             roomId: roomId,
             allPlayers: virtualniIgraci,
-            myCards: karte.ruke[0] // Šaljemo ti tvojih 10 karata
+            myCards: karte.ruke[0] // FIX: Šaljemo tačan niz karata za prvog igrača
         });
 
-        // Šaljemo početno stanje licitacije (Ti počroku)
         io.to(roomId).emit('licitation_update', {
             players: activeRooms[roomId].players,
             currentTurn: 0,
@@ -167,23 +166,23 @@ io.on('connection', (socket) => {
         });
     });
 
-    // KADA IGRAČ ILI BOT DA KARTU / PONUDU
     socket.on('make_bid', (data) => {
-        // Pronalaženje sobe u kojoj se igrač nalazi
-        let roomId = Object.keys(activeRooms).find(r => activeRooms[r].players[0].id === socket.id);
+        // FIX: Sada pravilno pretražujemo unutar niza igrača u svakoj sobi
+        let roomId = Object.keys(activeRooms).find(r => 
+            activeRooms[r].players.some(p => p.id === socket.id)
+        );
+        
         if (!roomId) return;
 
         let room = activeRooms[roomId];
         let trenutniIgrac = room.players[room.currentTurn];
 
-        // Sigurnosna provera: da li je stvarno red na ovog igrača
         if (trenutniIgrac.id !== socket.id) return;
 
         izvrsiLicitaciju(room, data.bid, trenutniIgrac.username);
     });
 });
 
-// GLAVNA FUNKCIJA ZA MANAGMENT LICITACIJE I BOT POTEZE
 function izvrsiLicitaciju(room, izbor, imeIgraca) {
     let trenutniIgrac = room.players[room.currentTurn];
 
@@ -191,12 +190,10 @@ function izvrsiLicitaciju(room, izbor, imeIgraca) {
         trenutniIgrac.passed = true;
         room.brojAktivnih--;
     } else {
-        // Ako je ponuda validna (npr. '2', '3', 'Igra')
         room.trenutnaPonuda = izbor;
         room.koJePonudio = imeIgraca;
     }
 
-    // Provera da li je ostao samo jedan igrač koji nije rekao "Dalje"
     if (room.brojAktivnih <= 1) {
         let pobednik = room.players.find(p => !p.passed) || room.players[0];
         
@@ -210,12 +207,10 @@ function izvrsiLicitaciju(room, izbor, imeIgraca) {
         return;
     }
 
-    // Pomeri red na sledećeg igrača koji NIJE rekao "Dalje"
     do {
         room.currentTurn = (room.currentTurn + 1) % 3;
     } while (room.players[room.currentTurn].passed);
 
-    // Obavesti sve o trenutnom stanju pre nego što bot odigra
     io.to(room.id).emit('licitation_update', {
         players: room.players,
         currentTurn: room.currentTurn,
@@ -225,31 +220,21 @@ function izvrsiLicitaciju(room, izbor, imeIgraca) {
         licitacijaZavrsena: false
     });
 
-    // --- LOGIKA AKO JE SLEDEĆI NA POTEZU BOT ---
     let sledeciIgrac = room.players[room.currentTurn];
     if (sledeciIgrac.isBot) {
         setTimeout(() => {
             let snagaRuke = proceniRukuBota(room.cards[room.currentTurn]);
             let botIzbor = 'Dalje';
 
-            // Ako bot ima dobre karte i niko još nije ponudio ništa visoko
             if (snagaRuke >= 3 && room.trenutnaPonuda === 'Traži se početna reč') {
-                botIzbor = '2'; // Bot otvara sa "2"
+                botIzbor = '2'; 
             } else if (snagaRuke >= 5 && room.trenutnaPonuda === '2') {
-                botIzbor = '3'; // Bot prati i diže na "3"
+                botIzbor = '3'; 
             }
 
-            // Bot izvršava svoj potez rekurzivno kroz istu funkciju
             izvrsiLicitaciju(room, botIzbor, sledeciIgrac.username);
-        }, 1500); // Mala pauza od 1.5 sekunde da izgleda realistično kao da bot razmišlja!
+        }, 1500); 
     }
 }
 
-});
-
-// Pokretanje servera
-const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => {
-    console.log(`Server je uspešno pokrenut na portu ${PORT}`);
-});
 
