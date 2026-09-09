@@ -36,17 +36,14 @@ pool.connect((err, client, release) => {
 app.post('/api/auth/register', async (req, res) => {
     const { username, email, password } = req.body;
     try {
-        // Provera da li korisnik već postoji
         const userExists = await pool.query('SELECT * FROM users WHERE username = $1 OR email = $2', [username, email]);
         if (userExists.rows.length > 0) {
             return res.status(400).json({ message: 'Korisničko ime ili email su već zauzeti.' });
         }
 
-        // Heširanje lozinke radi bezbednosti
         const saltRounds = 10;
         const hashedPassword = await bcrypt.hash(password, saltRounds);
 
-        // Upis u bazu
         await pool.query(
             'INSERT INTO users (username, email, password) VALUES ($1, $2, $3)',
             [username, email, hashedPassword]
@@ -70,15 +67,13 @@ app.post('/api/auth/login', async (req, res) => {
 
         const user = result.rows[0];
         
-        // Provera lozinke
         const isMatch = await bcrypt.compare(password, user.password);
         if (!isMatch) {
             return res.status(400).json({ message: 'Neispravno korisničko ime ili lozinka.' });
         }
 
-        // Kreiranje tokena (JWT)
         const secret = process.env.JWT_SECRET || 'moja_tajna_rec';
-        const token = jwt.sign({ userId: user.id, username: user.username }, secret, { expiresIn: '24h' });
+        const token = jwt.sign({ username: user.username }, secret, { expiresIn: '24h' });
 
         res.json({ token, username: user.username });
     } catch (err) {
@@ -87,7 +82,9 @@ app.post('/api/auth/login', async (req, res) => {
     }
 });
 
-// --- POMOĆNA FUNKCIJA ZA MEŠANJE I DELJENJE KARATA ---
+// ==========================================
+//  ŠPIL I DELJENJE KARATA (Preferans)
+// ==========================================
 function podeliPreferansKarte() {
     const boje = ['spades', 'diamonds', 'hearts', 'clubs']; // ♠️, ♦️, ♥️, ♣️
     const vrednosti = ['7', '8', '9', '10', 'J', 'Q', 'K', 'A'];
@@ -105,29 +102,33 @@ function podeliPreferansKarte() {
         [špil[i], špil[j]] = [špil[j], špil[i]];
     }
 
-    let igrac1 = špil.slice(0, 10);
-    let igrac2 = špil.slice(10, 20);
-    let igrac3 = špil.slice(20, 30);
-    let talon = špil.slice(30, 32);
-
-    return { ruke: [igrac1, igrac2, igrac3], talon: talon };
+    // Podela na 3 ruke po 10 karata i talon od 2 karte
+    return {
+        ruke: [špil.slice(0, 10), špil.slice(10, 20), špil.slice(20, 30)],
+        talon: špil.slice(30, 32)
+    };
 }
 
 // ==========================================
 //  SOCKET.IO LOGIKA (Jedan igrač + dva AI bota)
 // ==========================================
+const io = new Server(server, {
+    cors: {
+        origin: "*", 
+        methods: ["GET", "POST"]
+    }
+});
+
 let activeRooms = {}; 
 
 io.on('connection', (socket) => {
-    const username = socket.handshake.auth.username || "Gost_" + socket.id.substring(0, 4);
+    const username = socket.handshake.auth.username || "Igrač";
     console.log(`♣️ Pravi igrač ${username} se povezao na server.`);
 
-    // Kada igrač uđe na sto.html, odmah mu pravimo igru sa botovima
     socket.on('join_table', () => {
         const roomId = 'room_' + Date.now(); 
-        const podeljeneKarte = podeliPreferansKarte();
+        const karte = podeliPreferansKarte();
 
-        // Kreiramo listu igrača gde si TI na poziciji 1, a botovi na pozicijama 2 i 3
         const virtualniIgraci = [
             { id: socket.id, username: username, isBot: false },
             { id: 'bot_left', username: 'Bot_Milan 🤖', isBot: true },
@@ -138,27 +139,31 @@ io.on('connection', (socket) => {
             id: roomId,
             players: virtualniIgraci,
             gameState: 'licitation', 
-            talon: podeljeneKarte.talon, 
-            cards: podeljeneKarte.ruke, 
-            currentTurn: 0 // Ti (Igrač 1) počinješ licitaciju
+            talon: karte.talon, 
+            cards: karte.ruke, 
+            currentTurn: 0 
         };
 
-        // Pošto si ti jedini pravi čovek u sobi, samo tebe ubacujemo u Socket room
         socket.join(roomId);
         
-        // Šaljemo tebi tvoje karte i podatke o stolu gde su botovi suigrači
+        // Šaljemo podatke o stolu i isključivo tvoje karte (indeks 0 iz niza ruku)
         socket.emit('game_ready', {
             roomId: roomId,
-            mySeat: 1, // Ti uvek sediš na mestu br. 1 (dole)
-            allPlayers: virtualniIgraci.map(p => ({ id: p.id, username: p.username })),
-            myCards: podeljeneKarte.ruke[0] // Tvojih 10 karata
+            allPlayers: virtualniIgraci,
+            myCards: karte.ruke[0] 
         });
 
-        console.log(`🚀 Igra sa botovima je spremna u sobi ${roomId} za igrača ${username}!`);
+        console.log(`🚀 Igra sa botovima uspešno pokrenuta u sobi ${roomId} za igrača ${username}!`);
     });
 
     socket.on('disconnect', () => {
         console.log(`❌ Korisnik ${username} je prekinuo vezu.`);
     });
+});
+
+// Pokretanje servera
+const PORT = process.env.PORT || 5000;
+server.listen(PORT, () => {
+    console.log(`Server je uspešno pokrenut na portu ${PORT}`);
 });
 
